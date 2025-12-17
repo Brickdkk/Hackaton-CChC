@@ -1,0 +1,98 @@
+# Documentación Técnica API - SafetyZero
+
+Este documento resume la arquitectura técnica, lógica de negocio y endpoints de la API de SafetyZero, diseñado para ser consumido por agentes de IA y desarrolladores.
+
+## 1. Estructura de Datos (Pandas DataFrames)
+
+La base de datos volátil se simula utilizando un DataFrame de Pandas (`df_workers`).
+
+### Schema del DataFrame `df_workers`
+
+| Columna | Tipo de Dato | Descripción |
+| :--- | :--- | :--- |
+| `worker_id` | String | RUT del trabajador (Identificador único). |
+| `name` | String | Nombre completo del trabajador. |
+| `role` | String | Cargo o rol en la obra (ej. Maestro Mayor, Jornal). |
+| `contrato_trabajo` | Int (0/1) | 1: Contrato firmado y vigente. 0: Pendiente. |
+| `irl` | Int (0/1) | 1: Obligación de Informar (ODI) recibida. 0: Pendiente. |
+| `entrega_epp` | Int (0/1) | 1: EPP entregado y registrado. 0: Pendiente. |
+| `riohs` | Int (0/1) | 1: Reglamento Interno recibido. 0: Pendiente. |
+| `examen_aptitud` | Int (0/1) | 1: Examen de salud compatible (ej. altura). 0: Pendiente. |
+| `accidents_last_12_months` | Int | Número de accidentes reportados en el último año móvil. |
+| `hours_worked` | Int | Horas hombre trabajadas (para cálculo de tasas). |
+
+## 2. Definición de Endpoints de la API
+
+La API está construida sobre Flask y expone los siguientes recursos:
+
+### A. Pasaporte Digital (Validación de Ingreso)
+**Endpoint:** `GET /worker/{id}/status`
+
+**Descripción:** Valida si un trabajador cumple con los 5 requisitos críticos de la "Carpeta de Arranque" para ingresar a la obra.
+
+**Respuesta Exitosa (200 OK):**
+```json
+{
+  "worker_id": "11111111-1",
+  "name": "Juan Perez",
+  "role": "Maestro Mayor",
+  "status": "Verde",  // "Verde" (Acreditado) o "Rojo" (Bloqueado)
+  "message": "Acreditado para ingreso",
+  "checklist": {
+    "contrato_trabajo": true,
+    "irl": true,
+    "entrega_epp": true,
+    "riohs": true,
+    "examen_aptitud": true
+  },
+  "traceability": {
+    "timestamp": "2023-10-27T10:00:00.000000",
+    "ip": "127.0.0.1",
+    "gps": "-33.4489, -70.6693",
+    "action": "check_status",
+    "hash": "a1b2c3d4..." // Hash SHA-256 para integridad
+  }
+}
+```
+
+### B. KPIs de Accidentabilidad
+**Endpoint:** `GET /kpi/accidentabilidad`
+
+**Descripción:** Retorna indicadores clave de desempeño de seguridad basados en los datos actuales.
+
+**Respuesta Exitosa (200 OK):**
+```json
+{
+  "frequency_rate": 0.0,      // Tasa de Frecuencia
+  "compliance_rate": 66.67,   // % de Trabajadores Acreditados
+  "total_workers": 3,
+  "active_workers": 2
+}
+```
+
+## 3. Lógica de Cálculo de KPIs (Estándar PEC)
+
+### Tasa de Frecuencia (Frequency Rate)
+Se calcula siguiendo la normativa chilena (DS 40 / DS 67) y estándares de la Mutual de Seguridad.
+- **Fórmula:** `(Número de Accidentes / Total Horas Hombre Trabajadas) * 1.000.000`
+- **Implementación en Pandas:**
+  ```python
+  total_accidents = df_workers['accidents_last_12_months'].sum()
+  total_hours = df_workers['hours_worked'].sum()
+  frequency_rate = (total_accidents / total_hours * 1_000_000)
+  ```
+
+### Tasa de Cumplimiento (Compliance Rate)
+Porcentaje de la fuerza laboral que está completamente acreditada (Estado "Verde").
+- **Fórmula:** `(Trabajadores con Checklist Completo / Total Trabajadores) * 100`
+
+## 4. Trazabilidad y Cumplimiento Legal (Dictamen 0789/15)
+
+Para cumplir con la normativa de la Dirección del Trabajo sobre documentación electrónica:
+1.  **Metadatos:** Cada transacción registra IP, Timestamp y Geolocalización (GPS).
+2.  **Integridad:** Se genera un Hash SHA-256 concatenando los metadatos y la acción realizada. Esto asegura que el registro de validación no ha sido alterado, sirviendo como prueba ante una fiscalización.
+
+## 5. Stack Tecnológico y Roles
+
+-   **Backend / Lógica de Negocio (Analista de Datos):** Python, Flask, Pandas. Responsable de la validación normativa y cálculo de KPIs.
+-   **Frontend (Maida/Nacho):** Consumirán estos endpoints JSON para mostrar el semáforo (Verde/Rojo) en la app móvil/web y generar el código QR.
