@@ -2,6 +2,13 @@ import pandas as pd
 from flask import Flask, jsonify, request
 from datetime import datetime
 import hashlib
+import sys
+import os
+
+# Add the current directory to sys.path to ensure imports work
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+
+from logic.analisis import calculate_kpis
 
 app = Flask(__name__)
 
@@ -12,6 +19,7 @@ data = {
     'worker_id': ['11111111-1', '22222222-2', '33333333-3'],
     'name': ['Juan Perez', 'Maria Gonzalez', 'Pedro Soto'],
     'role': ['Maestro Mayor', 'Jornal', 'Rigger'],
+    'sexo': ['Masculino', 'Femenino', 'Masculino'], # Added for DS 44
     'contrato_trabajo': [1, 1, 0],
     'irl': [1, 1, 1],
     'entrega_epp': [1, 1, 0],
@@ -32,7 +40,8 @@ def generate_traceability(action, worker_id):
     timestamp = datetime.now().isoformat()
     # Simulating IP and GPS for the MVP
     ip_address = request.remote_addr if request else '127.0.0.1'
-    gps_coords = "-33.4489, -70.6693" # Santiago, Chile
+    # GPS coordinates provided by Nacho (Frontend) or defaulted
+    gps_coords = request.args.get('gps') or request.json.get('gps') if request.is_json else "-33.4489, -70.6693"
     
     trace_string = f"{timestamp}|{worker_id}|{action}|{ip_address}|{gps_coords}"
     trace_hash = hashlib.sha256(trace_string.encode()).hexdigest()
@@ -45,41 +54,54 @@ def generate_traceability(action, worker_id):
         'hash': trace_hash
     }
 
-def calculate_kpis():
-    """
-    Calculates KPIs based on PEC standard (Mutual de Seguridad).
-    """
-    total_workers = len(df_workers)
-    total_accidents = df_workers['accidents_last_12_months'].sum()
-    total_hours = df_workers['hours_worked'].sum()
-    
-    # Tasa de Frecuencia (Frequency Rate) = (Number of accidents / Total hours worked) * 1,000,000
-    frequency_rate = (total_accidents / total_hours * 1_000_000) if total_hours > 0 else 0
-    
-    # Compliance Rate
-    compliant_workers = df_workers[
-        (df_workers['contrato_trabajo'] == 1) &
-        (df_workers['irl'] == 1) &
-        (df_workers['entrega_epp'] == 1) &
-        (df_workers['riohs'] == 1) &
-        (df_workers['examen_aptitud'] == 1)
-    ]
-    compliance_rate = (len(compliant_workers) / total_workers * 100) if total_workers > 0 else 0
-    
-    return {
-        'frequency_rate': round(frequency_rate, 2),
-        'compliance_rate': round(compliance_rate, 2),
-        'total_workers': total_workers,
-        'active_workers': len(compliant_workers)
-    }
-
 # --- Endpoints ---
+
+@app.route('/auth/register', methods=['POST'])
+def register_worker():
+    """
+    Sincronización con Maida (Login y Género).
+    Recibe: rut, password, nombre, sexo.
+    """
+    data = request.get_json()
+    
+    required_fields = ['rut', 'password', 'nombre', 'sexo']
+    if not all(field in data for field in required_fields):
+        return jsonify({'error': 'Faltan campos obligatorios'}), 400
+    
+    # En un caso real, aquí se guardaría en la BD y se hashearía la password.
+    # Para este MVP, agregamos al DataFrame en memoria.
+    
+    new_worker = {
+        'worker_id': data['rut'],
+        'name': data['nombre'],
+        'role': 'Nuevo Ingreso', # Default role
+        'sexo': data['sexo'],
+        'contrato_trabajo': 0,
+        'irl': 0,
+        'entrega_epp': 0,
+        'riohs': 0,
+        'examen_aptitud': 0,
+        'accidents_last_12_months': 0,
+        'hours_worked': 0
+    }
+    
+    global df_workers
+    # Concatenar el nuevo trabajador
+    df_workers = pd.concat([df_workers, pd.DataFrame([new_worker])], ignore_index=True)
+    
+    traceability = generate_traceability('register_worker', data['rut'])
+    
+    return jsonify({
+        'message': 'Trabajador registrado exitosamente',
+        'worker_id': data['rut'],
+        'traceability': traceability
+    }), 201
 
 @app.route('/worker/<worker_id>/status', methods=['GET'])
 def get_worker_status(worker_id):
     """
-    Digital Passport Logic.
-    Returns Green (Approved) or Red (Blocked) status.
+    Lógica del "Pasaporte Digital" (Semáforo de Acceso).
+    Valida los 5 documentos críticos.
     """
     worker = df_workers[df_workers['worker_id'] == worker_id]
     
@@ -88,17 +110,19 @@ def get_worker_status(worker_id):
     
     w = worker.iloc[0]
     
-    checklist = {
-        'contrato_trabajo': bool(w['contrato_trabajo']),
-        'irl': bool(w['irl']),
-        'entrega_epp': bool(w['entrega_epp']),
-        'riohs': bool(w['riohs']),
-        'examen_aptitud': bool(w['examen_aptitud'])
-    }
+    # Documentos críticos
+    docs = ['contrato_trabajo', 'irl', 'entrega_epp', 'riohs', 'examen_aptitud']
+    checklist = {doc: bool(w[doc]) for doc in docs}
     
-    is_approved = all(checklist.values())
-    status = 'Verde' if is_approved else 'Rojo'
-    message = 'Acreditado para ingreso' if is_approved else 'Bloqueado: Documentación pendiente'
+    # Regla de Negocio: Si todos son 1, devuelve "Verde". Si falta alguno, devuelve "Rojo"
+    missing_docs = [doc for doc, status in checklist.items() if not status]
+    
+    if not missing_docs:
+        status = 'Verde'
+        message = 'Habilitado para ingreso'
+    else:
+        status = 'Rojo'
+        message = f'Bloqueado. Faltan documentos: {", ".join(missing_docs)}'
     
     traceability = generate_traceability('check_status', worker_id)
     
@@ -115,9 +139,10 @@ def get_worker_status(worker_id):
 @app.route('/kpi/accidentabilidad', methods=['GET'])
 def get_kpis():
     """
-    Returns Safety KPIs.
+    Motor de KPIs (Estándar PEC de la Mutual).
+    Devuelve Tasa de Frecuencia y Tasa de Cumplimiento.
     """
-    kpis = calculate_kpis()
+    kpis = calculate_kpis(df_workers)
     return jsonify(kpis)
 
 if __name__ == '__main__':

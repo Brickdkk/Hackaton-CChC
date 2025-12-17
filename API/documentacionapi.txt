@@ -13,6 +13,7 @@ La base de datos volátil se simula utilizando un DataFrame de Pandas (`df_worke
 | `worker_id` | String | RUT del trabajador (Identificador único). |
 | `name` | String | Nombre completo del trabajador. |
 | `role` | String | Cargo o rol en la obra (ej. Maestro Mayor, Jornal). |
+| `sexo` | String | Sexo del trabajador (Masculino/Femenino) - Perspectiva de Género DS 44. |
 | `contrato_trabajo` | Int (0/1) | 1: Contrato firmado y vigente. 0: Pendiente. |
 | `irl` | Int (0/1) | 1: Obligación de Informar (ODI) recibida. 0: Pendiente. |
 | `entrega_epp` | Int (0/1) | 1: EPP entregado y registrado. 0: Pendiente. |
@@ -63,10 +64,35 @@ La API está construida sobre Flask y expone los siguientes recursos:
 **Respuesta Exitosa (200 OK):**
 ```json
 {
-  "frequency_rate": 0.0,      // Tasa de Frecuencia
-  "compliance_rate": 66.67,   // % de Trabajadores Acreditados
-  "total_workers": 3,
-  "active_workers": 2
+  "tasa_frecuencia": 0.0,      // (Total Accidentes / Horas Hombre) * 1.000.000
+  "tasa_cumplimiento": 66.67,  // % de Trabajadores con checklist 100% completo
+  "total_trabajadores": 3,
+  "total_horas_trabajadas": 3600,
+  "total_accidentes": 1
+}
+```
+
+### C. Registro de Trabajadores (Sincronización Maida)
+**Endpoint:** `POST /auth/register`
+
+**Descripción:** Registra un nuevo trabajador en el sistema.
+
+**Body (JSON):**
+```json
+{
+  "rut": "44444444-4",
+  "password": "securepassword",
+  "nombre": "Ana Lopez",
+  "sexo": "Femenino"
+}
+```
+
+**Respuesta Exitosa (201 Created):**
+```json
+{
+  "message": "Trabajador registrado exitosamente",
+  "worker_id": "44444444-4",
+  "traceability": { ... }
 }
 ```
 
